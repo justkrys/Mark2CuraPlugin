@@ -16,8 +16,12 @@
 ## along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ##
 
+import re
 from UM.Logger import Logger
 from ..Script import Script
+
+
+log = Logger.log  # Alias for convenience
 
 
 class Mark2Tweaks(Script):
@@ -43,11 +47,41 @@ class Mark2Tweaks(Script):
           }'''
 
     def execute(self, data):
-        Logger.log('i', '*** MARK 2 TWEAKS START ***')
-        for i, layer in enumerate(data):
+        log('d', '*** MARK 2 TWEAKS START ***')
+        remove_superfluous = self.getSettingValueByKey('remove_superfluous')
+        log('d', 'Remove Superfluous: {}'.format(remove_superfluous))
+        layer_num = None
+        for layer in data:
             lines = layer.split('\n')
-            for line in lines:
-                pass
-        Logger.log('i', '*** MARK 2 TWEAKS END ***')
+            layer_num = self.find_layer_num(lines)
+            if not layer_num:
+                continue
+            if remove_superfluous:
+                self.remove_superfluous(layer_num, lines)
+        log('d', '*** MARK 2 TWEAKS END ***')
         return data
+
+    def find_layer_num(self, lines):
+        for line in lines:
+            if line.startswith(';LAYER:'):
+                return self.getValue(line, ";LAYER:")
+    
+    def remove_superfluous(self, layer_num, lines):
+        for line in lines[:]:  # Copy of lines so ines can be modified in loop
+            if line in ('T0', 'T1'):
+                log('d', 'Tool change in layer {:.0f}'.format(layer_num))
+
+    ## Replacement version of getValue that fixes a couple bugs.
+    def getValue(self, line, key, default = None):
+        key_pos = line.find(key)
+        if key_pos == -1 or (';' in line and key_pos > line.find(';')):
+            return default
+        sub_part = line[key_pos + len(key):]
+        m = re.search('^[0-9]*\.?[0-9]*', sub_part)
+        if m is None:
+            return default
+        try:
+            return float(m.group(0))
+        except:
+            return default        
 

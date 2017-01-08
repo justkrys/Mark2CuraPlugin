@@ -32,23 +32,22 @@ class Mark2Tweaks(Script):
             "metadata": {},
             "version": 2,
             "settings": {
-              "airspeed": {
-                "label": "Airspeed",
+              "remove_superfluous": {
+                "label": "Improve Tool Changes",
                 "description":
-                  "What is the air speed velocity of an unladden swallow?",
-                "unit": "m/s",
-                "type": "float",
-                "default_value": 11.0
+                  "Remove superfluous movements after each tool change.  This can improve print quality by preventing materials from incorrectly touching immediately after a tool change.",
+                "type": "bool",
+                "default_value": true
               }
             }
           }'''
 
     def execute(self, data):
-        airspeed = self.getSettingValueByKey('airspeed')
-        data = [';AIRSPEED: {}\n'.format(airspeed)] + data
+        Logger.log('i', '*** MARK 2 TWEAKS START ***')
         for i, layer in enumerate(data):
             lines = layer.split('\n')
             for line in lines:
-                Logger.log('d', 'MARK2: {}'.format(line))
+                pass
+        Logger.log('i', '*** MARK 2 TWEAKS END ***')
         return data
 

@@ -97,48 +97,111 @@ class Mark2Tweaks(Script):
                 self.strip_cura_print_area_hack(layer_num, lines, i)
                 self.collapse_post_tool_change_movements(layer_num, lines, i)
 
-    def strip_cura_print_area_hack(self, layer_num, lines, tx_idx):
+    def strip_cura_print_area_hack(self, layer_num, lines, t_idx):
         """Remove TinkerGnome's Cura print area workaround line.
 
         If there is a G0 between M109 and G10, remove it.
         There should only be one.
         TinkerGnome says adding it was a hack/workaround so we can kill it.
         """
-        m109_idx = self.find_line_index(lines, 'M109', start=tx_idx)
+        m109_idx = self.find_line_index(lines, 'M109', start=t_idx)
         assert(m109_idx is not None, layer_msg(layer_num,
           'Cannot find M109 after tool change.'))
-        assert(tx_idx < m109_idx < tx_idx + 20, layer_msg(layer_num,
-          'Sanity Check, M109 too far from {}'.format(lines[tx_idx])))
+        assert(t_idx < m109_idx < t_idx + 20, layer_msg(layer_num,
+          'Sanity Check: M109 too far from {}'.format(lines[t_idx])))
+
         g10_idx = self.find_line_index(lines, 'G10', start=m109_idx)
         assert(g10_idx is not None, layer_msg(layer_num,
           'Cannot find G10 after tool change.'))
         assert(m109_idx < g10_idx < m109_idx + 5, layer_msg(layer_num,
-          'Sanity Check, G10 too far from M109'))
+          'Sanity Check: G10 too far from M109'))
+
         hack = self.find_line_and_index(lines, 'G0', ('X', 'Y', 'Z'),
           m109_idx+1, g10_idx)
-        if hack is None: return
+        if hack is None:
+            return
         hack_line, hack_idx = hack
         if (self.getValue(hack_line, 'Z') == 14
           and self.getValue(hack_line, 'Y') == 35):
-            layer_log(layer_num, 'd', 'Striping Cura Print Area Hack.')
+            layer_log(layer_num, 'd', 'Striping Cura print area hack.')
             del lines[hack_idx]
 
-    def collapse_post_tool_change_movements(self, layer_num, lines, tx_idx):
+    def collapse_post_tool_change_movements(self, layer_num, lines, t_idx):
         """Collapse any post tool change movents into a single movement.
 
         Any non-extrusion movements after tool change should be collapsed into
         a single line.  Keep only the last G0/G1 but add the F and Z of the
         first G0/G1.  But only collapse if there is more than one line.
         """
-        extrude_idx = self.find_line_index(lines, ('G0', 'G1'), 'E', tx_idx)
+        extrude_idx = self.find_line_index(lines, ('G0', 'G1'), 'E', t_idx)
         assert(extrude_idx is not None, layer_msg(layer_num,
-          'Cannot find extruding movement after tool change.'))
-        first_g_line, first_g_idx = self.find_line_and_index(lines, ('G0',
-          'G1'), None, tx_idx, extrude_idx)
+          'Cannot find extruding G0/G1 line after tool change.'))
+
+        first_g = self.find_line_and_index(lines, ('G0', 'G1'), None, t_idx,
+          extrude_idx)
+        assert(first_g is not None, layer_msg(layer_num,
+          'Sanity Check: Could not find a G0/G1 line before the extrusion '
+          'after tool change.'))
+        first_g_line, first_g_idx = first_g
+        assert(first_g_idx < extrude_idx, layer_msg(layer_num,
+          'Sanity Check: First G0/G1 is >= to first extruding G0/G1.'))
+
         f_value = self.getValue(first_g_line, 'F')
         z_value = self.getValue(first_g_line, 'Z')
+        assert(z_value is not None, layer_msg(layer_num,
+          'Sanity Check: Z value not found in first G0/G1 line.'))
 
-        layer_log(layer_num, 'w', '{} {}'.format(f_value, z_value))
+        self.delete_all_g0_or_g1_except_last(layer_num, lines, first_g_idx,
+          'Collapsing post tool change movements.')
+        g_line = lines[first_g_idx]
+        assert(self.is_g0_or_g1(g_line), layer_msg(layer_num,
+          'Sanity Check: Missing G0/G1 after collapse.'))
+        assert(not self.is_g0_or_g1(lines[first_g_idx+1]), layer_msg(layer_num,
+          'Sanity Check: More than one G0/G1 after collapse.'))
+
+        self.add_f_and_z_values(layer_num, lines, first_g_idx, z_value,
+          f_value)
+        assert(self.getValue(g_line, 'F') is not None, layer_msg(layer_num,
+          'Sanity Check: Missing required F value.'))
+        assert(self.getValue(g_line, 'Z') is not None, layer_msg(layer_num,
+          'Sanity Check: Missing required Z value.'))
+
+    def delete_all_g0_or_g1_except_last(self, layer_num, lines, first_g_idx,
+      log_msg):
+        """Delete all G0/G1 lines, except the last one.
+
+        As long as there is more than one G line, delete the first.
+        Subsequent G line indices move up by one == first_g_idx.
+        This works only if lines are deleted and not just replaced.
+        If only one G, never run.  Last G is not deleted.
+
+        Also log only once if one or more deletes occurs.
+        """
+        has_logged = False
+        while self.is_g0_or_g1(lines[first_g_idx+1]):
+            if not has_logged:
+                # Never log on single line.  Only log once if multiple lines.
+                layer_log(layer_num, 'd', log_msg)
+                has_logged = True
+            del lines[first_g_idx]
+
+    def is_g0_or_g1(self, line):
+        return line.startswith('G0 ') or line.startswith('G1 ')
+
+    def add_f_and_z_values(self, layer_num, lines, g_idx, z_value,
+      f_value=None):
+        """Add Z and F values to the indicated G0/G1 line.
+
+        f_value is optional.
+        Existing Z and F values will not be replaced.
+        """
+        line = lines[g_idx]
+        fields = line.split(' ')
+        if f_value is not None and self.getValue(line, 'F') is None:
+            fields.insert(1, 'F{:.0F}'.format(f_value))
+        if self.getValue(line, 'Z') is None:
+            fields.append('Z{:.2f}'.format(z_value))
+        lines[g_idx] = ' '.join(fields)
 
     def find_line(self, *args, **kwargs):
         """Return just the line from self.find_line_and_index()."""

@@ -198,9 +198,9 @@ class Mark2Tweaks(Script):
         line = lines[g_idx]
         fields = line.split(' ')
         if f_value is not None and self.getValue(line, 'F') is None:
-            fields.insert(1, 'F{:.0F}'.format(f_value))
+            fields.insert(1, 'F{}'.format(f_value))
         if self.getValue(line, 'Z') is None:
-            fields.append('Z{:.2f}'.format(z_value))
+            fields.append('Z{}'.format(z_value))
         lines[g_idx] = ' '.join(fields)
 
     def find_line(self, *args, **kwargs):

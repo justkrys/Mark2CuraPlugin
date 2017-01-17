@@ -120,20 +120,14 @@ class Mark2Tweaks(Script):
         There should only be one.
         TinkerGnome says adding it was a hack/workaround so we can kill it.
         """
-        m109_idx = self.find_line_index(lines, 'M109', start=t_idx)
-        layer_assert(layer_num, m109_idx is not None,
-          'Cannot find M109 after tool change.')
-        layer_assert(layer_num, t_idx < m109_idx < t_idx + 20,
-          'Sanity Check: M109 too far from {}'.format(lines[t_idx]))
-
-        g10_idx = self.find_line_index(lines, 'G10', start=m109_idx)
+        g10_idx = self.find_line_index(lines, 'G10', start=t_idx)
         layer_assert(layer_num, g10_idx is not None,
           'Cannot find G10 after tool change.')
-        layer_assert(layer_num, m109_idx < g10_idx < m109_idx + 5,
+        layer_assert(layer_num, t_idx < g10_idx < t_idx + 10,
           'Sanity Check: G10 too far from M109')
 
         hack = self.find_line_and_index(lines, 'G0', ('X', 'Y', 'Z'),
-          m109_idx+1, g10_idx)
+          t_idx+1, g10_idx)
         if hack is None:
             return
         hack_line, hack_idx = hack
@@ -169,17 +163,15 @@ class Mark2Tweaks(Script):
 
         self.delete_all_g0_or_g1_except_last(layer_num, lines, first_g_idx,
           'Collapsing post tool change movements.')
-        g_line = lines[first_g_idx]
-        layer_assert(layer_num, self.is_g0_or_g1(g_line),
+        layer_assert(layer_num, self.is_g0_or_g1(lines[first_g_idx]),
           'Sanity Check: Missing G0/G1 after collapse.')
         layer_assert(layer_num, not self.is_g0_or_g1(lines[first_g_idx+1]),
           'Sanity Check: More than one G0/G1 after collapse.')
 
         self.add_f_and_z_values(layer_num, lines, first_g_idx, z_value,
           f_value)
-        layer_assert(layer_num, self.getValue(g_line, 'F') is not None,
-          'Sanity Check: Missing required F value.')
-        layer_assert(layer_num, self.getValue(g_line, 'Z') is not None,
+        layer_assert(layer_num,
+          self.getValue(lines[first_g_idx], 'Z') is not None,
           'Sanity Check: Missing required Z value.')
 
     def delete_all_g0_or_g1_except_last(self, layer_num, lines, first_g_idx,

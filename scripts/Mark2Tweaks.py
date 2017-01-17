@@ -24,6 +24,8 @@ plugin.
 Put this script in PostProcessingPlugin's scripts folder.
 """
 
+
+import sys
 import re
 from UM.Logger import Logger
 from ..Script import Script
@@ -33,14 +35,17 @@ from ..Script import Script
 log = Logger.log
 
 
-def layer_log(layer_num, msg_type, msg):
+def layer_log(layer_num, message_type, message):
     """Log a message prefixed with the curent layer number."""
-    log(msg_type, layer_msg(layer_num, msg))
+    log(message_type, layer_msg(layer_num, message))
 
 
-def layer_msg(layer_num, msg):
+def layer_msg(layer_num, message):
     """Return msg prefixed with the current layer number."""
-    return 'Layer {:.0f}: {}'.format(layer_num, msg)
+    return 'Layer {:.0f}: {}'.format(layer_num, message)
+
+def layer_assert(layer_num, condition, message):
+    assert condition, layer_msg(layer_num, message)
 
 
 class Mark2Tweaks(Script):
@@ -94,8 +99,19 @@ class Mark2Tweaks(Script):
         # Copy of lines so lines can be deleted or inserted in loop
         for i, line in enumerate(lines[:]):
             if line in ('T0', 'T1'):
-                self.strip_cura_print_area_hack(layer_num, lines, i)
-                self.collapse_post_tool_change_movements(layer_num, lines, i)
+                try:
+                    self.strip_cura_print_area_hack(layer_num, lines, i)
+                except Exception as exception:
+                    self.log_exception_as_warning(layer_num, exception)
+                try:
+                    self.collapse_post_tool_change_movements(
+                      layer_num, lines, i)
+                except Exception as exception:
+                    self.log_exception_as_warning(layer_num, exception)
+
+    def log_exception_as_warning(self, layer_num, exception):
+        lineno = sys.exc_info()[-1].tb_lineno
+        layer_log(layer_num, 'w', 'Line {}: {}'.format(lineno, exception))
 
     def strip_cura_print_area_hack(self, layer_num, lines, t_idx):
         """Remove TinkerGnome's Cura print area workaround line.
@@ -105,16 +121,16 @@ class Mark2Tweaks(Script):
         TinkerGnome says adding it was a hack/workaround so we can kill it.
         """
         m109_idx = self.find_line_index(lines, 'M109', start=t_idx)
-        assert(m109_idx is not None, layer_msg(layer_num,
-          'Cannot find M109 after tool change.'))
-        assert(t_idx < m109_idx < t_idx + 20, layer_msg(layer_num,
-          'Sanity Check: M109 too far from {}'.format(lines[t_idx])))
+        layer_assert(layer_num, m109_idx is not None,
+          'Cannot find M109 after tool change.')
+        layer_assert(layer_num, t_idx < m109_idx < t_idx + 20,
+          'Sanity Check: M109 too far from {}'.format(lines[t_idx]))
 
         g10_idx = self.find_line_index(lines, 'G10', start=m109_idx)
-        assert(g10_idx is not None, layer_msg(layer_num,
-          'Cannot find G10 after tool change.'))
-        assert(m109_idx < g10_idx < m109_idx + 5, layer_msg(layer_num,
-          'Sanity Check: G10 too far from M109'))
+        layer_assert(layer_num, g10_idx is not None,
+          'Cannot find G10 after tool change.')
+        layer_assert(layer_num, m109_idx < g10_idx < m109_idx + 5,
+          'Sanity Check: G10 too far from M109')
 
         hack = self.find_line_and_index(lines, 'G0', ('X', 'Y', 'Z'),
           m109_idx+1, g10_idx)
@@ -134,37 +150,37 @@ class Mark2Tweaks(Script):
         first G0/G1.  But only collapse if there is more than one line.
         """
         extrude_idx = self.find_line_index(lines, ('G0', 'G1'), 'E', t_idx)
-        assert(extrude_idx is not None, layer_msg(layer_num,
-          'Cannot find extruding G0/G1 line after tool change.'))
+        layer_assert(layer_num, extrude_idx is not None,
+          'Cannot find extruding G0/G1 line after tool change.')
 
         first_g = self.find_line_and_index(lines, ('G0', 'G1'), None, t_idx,
           extrude_idx)
-        assert(first_g is not None, layer_msg(layer_num,
+        layer_assert(layer_num, first_g is not None,
           'Sanity Check: Could not find a G0/G1 line before the extrusion '
-          'after tool change.'))
+          'after tool change.')
         first_g_line, first_g_idx = first_g
-        assert(first_g_idx < extrude_idx, layer_msg(layer_num,
-          'Sanity Check: First G0/G1 is >= to first extruding G0/G1.'))
+        layer_assert(layer_num, first_g_idx < extrude_idx,
+          'Sanity Check: First G0/G1 is >= to first extruding G0/G1.')
 
         f_value = self.getValue(first_g_line, 'F')
         z_value = self.getValue(first_g_line, 'Z')
-        assert(z_value is not None, layer_msg(layer_num,
-          'Sanity Check: Z value not found in first G0/G1 line.'))
+        layer_assert(layer_num, z_value is not None,
+          'Sanity Check: Z value not found in first G0/G1 line.')
 
         self.delete_all_g0_or_g1_except_last(layer_num, lines, first_g_idx,
           'Collapsing post tool change movements.')
         g_line = lines[first_g_idx]
-        assert(self.is_g0_or_g1(g_line), layer_msg(layer_num,
-          'Sanity Check: Missing G0/G1 after collapse.'))
-        assert(not self.is_g0_or_g1(lines[first_g_idx+1]), layer_msg(layer_num,
-          'Sanity Check: More than one G0/G1 after collapse.'))
+        layer_assert(layer_num, self.is_g0_or_g1(g_line),
+          'Sanity Check: Missing G0/G1 after collapse.')
+        layer_assert(layer_num, not self.is_g0_or_g1(lines[first_g_idx+1]),
+          'Sanity Check: More than one G0/G1 after collapse.')
 
         self.add_f_and_z_values(layer_num, lines, first_g_idx, z_value,
           f_value)
-        assert(self.getValue(g_line, 'F') is not None, layer_msg(layer_num,
-          'Sanity Check: Missing required F value.'))
-        assert(self.getValue(g_line, 'Z') is not None, layer_msg(layer_num,
-          'Sanity Check: Missing required Z value.'))
+        layer_assert(layer_num, self.getValue(g_line, 'F') is not None,
+          'Sanity Check: Missing required F value.')
+        layer_assert(layer_num, self.getValue(g_line, 'Z') is not None,
+          'Sanity Check: Missing required Z value.')
 
     def delete_all_g0_or_g1_except_last(self, layer_num, lines, first_g_idx,
       log_msg):

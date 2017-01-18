@@ -116,18 +116,13 @@ class Mark2Tweaks(Script):
     def strip_cura_print_area_hack(self, layer_num, lines, t_idx):
         """Remove TinkerGnome's Cura print area workaround line.
 
-        If there is a G0 between M109 and G10, remove it.
+        If there is a G0 between T and G10/M104, remove it.
         There should only be one.
         TinkerGnome says adding it was a hack/workaround so we can kill it.
         """
-        g10_idx = self.find_line_index(lines, 'G10', start=t_idx)
-        layer_assert(layer_num, g10_idx is not None,
-          'Cannot find G10 after tool change.')
-        layer_assert(layer_num, t_idx < g10_idx < t_idx + 10,
-          'Sanity Check: G10 too far from M109')
-
-        hack = self.find_line_and_index(lines, 'G0', ('X', 'Y', 'Z'),
-          t_idx+1, g10_idx)
+        end_idx = self.find_g10_or_m104(layer_num, lines, t_idx)
+        hack = self.find_line_and_index(lines, 'G0', ('X', 'Y', 'Z'), t_idx+1,
+          end_idx)
         if hack is None:
             return
         hack_line, hack_idx = hack
@@ -143,18 +138,19 @@ class Mark2Tweaks(Script):
         a single line.  Keep only the last G0/G1 but add the F and Z of the
         first G0/G1.  But only collapse if there is more than one line.
         """
-        extrude_idx = self.find_line_index(lines, ('G0', 'G1'), 'E', t_idx)
-        layer_assert(layer_num, extrude_idx is not None,
+        start_idx = self.find_g10_or_m104(layer_num, lines, t_idx)
+        end_idx = self.find_line_index(lines, ('G0', 'G1'), 'E', start_idx)
+        layer_assert(layer_num, end_idx is not None,
           'Cannot find extruding G0/G1 line after tool change.')
 
-        first_g = self.find_line_and_index(lines, ('G0', 'G1'), None, t_idx,
-          extrude_idx)
+        first_g = self.find_line_and_index(lines, ('G0', 'G1'), None,
+          start_idx, end_idx)
         layer_assert(layer_num, first_g is not None,
-          'Sanity Check: Could not find a G0/G1 line before the extrusion '
+          'Sanity Check: Could not find a G0/G1 line before extrusion and '
           'after tool change.')
         first_g_line, first_g_idx = first_g
-        layer_assert(layer_num, first_g_idx < extrude_idx,
-          'Sanity Check: First G0/G1 is >= to first extruding G0/G1.')
+        layer_assert(layer_num, first_g_idx < end_idx,
+          'Sanity Check: First G0/G1 is >= to first extrusion.')
 
         f_value = self.getValue(first_g_line, 'F')
         z_value = self.getValue(first_g_line, 'Z')
@@ -173,6 +169,16 @@ class Mark2Tweaks(Script):
         layer_assert(layer_num,
           self.getValue(lines[first_g_idx], 'Z') is not None,
           'Sanity Check: Missing required Z value.')
+
+    def find_g10_or_m104(self, layer_num, lines, t_idx):
+        idx = self.find_line_index(lines, 'G10', start=t_idx)
+        if idx is None:  # Assume RepRap style G-code
+            idx = self.find_line_index(lines, 'M104', start=t_idx)
+        layer_assert(layer_num, idx is not None,
+          'Cannot find G10/M104 after tool change.')
+        layer_assert(layer_num, t_idx < idx < t_idx + 10,
+          'Sanity Check: G10/M104 too far from T')
+        return idx
 
     def delete_all_g0_or_g1_except_last(self, layer_num, lines, first_g_idx,
       log_msg):

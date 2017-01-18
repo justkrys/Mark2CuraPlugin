@@ -27,6 +27,7 @@ Put this script in PostProcessingPlugin's scripts folder.
 
 import re
 import traceback
+import contextlib
 from UM.Logger import Logger
 from ..Script import Script
 
@@ -35,13 +36,17 @@ from ..Script import Script
 log = Logger.log
 
 
-def handle_exception(layer_num, log_not_raise=False):
+@contextlib.contextmanager
+def exception_handler(layer_num, log_not_raise=False):
     """Either raise or just log the last exception."""
-    if log_not_raise:
-        layer_log(layer_num, 'e', ''.join(traceback.format_exc()))
-    else:
-        layer_log(layer_num, 'e', 'Exception!  Traceback follows.')
-        raise
+    try:
+        yield
+    except:
+        if log_not_raise:
+            layer_log(layer_num, 'e', ''.join(traceback.format_exc()))
+        else:
+            layer_log(layer_num, 'e', 'Exception!  Traceback follows.')
+            raise
 
 
 def layer_log(layer_num, message_type, message):
@@ -63,8 +68,15 @@ class Mark2Tweaks(Script):
             "metadata": {},
             "version": 2,
             "settings": {
+              "remove_hack": {
+                "label": "Clean Up Cura Workaround",
+                "description":
+                  "The Mark 2 settings include a workaround to a Cura limitation.  This tweak cleans up after it.",
+                "type": "bool",
+                "default_value": true
+              },
               "remove_superfluous": {
-                "label": "Improve Tool Changes",
+                "label": "Remove Extra Movements",
                 "description":
                   "Remove superfluous movements after each tool change.  This can improve print quality by preventing materials from incorrectly touching immediately after a tool change.",
                 "type": "bool",
@@ -83,18 +95,28 @@ class Mark2Tweaks(Script):
     def execute(self, data):
         """Process all G-code and apply selected tweaks."""
         log('d', '*** MARK 2 TWEAKS START ***')
+        remove_hack = self.getSettingValueByKey('remove_hack')
         remove_superfluous = self.getSettingValueByKey('remove_superfluous')
         ignore_errors = self.getSettingValueByKey('ignore_errors')
+        log('d', 'Remove Hack: {}'.format(remove_hack))
         log('d', 'Remove Superfluous: {}'.format(remove_superfluous))
         log('d', 'Ignore Errors: {}'.format(ignore_errors))
-        for i, layer in enumerate(data):
+        for layer_idx, layer in enumerate(data):
             lines = layer.split('\n')
             layer_num = self.find_layer_num(lines)
             if layer_num is None:
                 continue
-            if remove_superfluous:
-                self.remove_superfluous(layer_num, lines, ignore_errors)
-            data[i] = '\n'.join(lines)
+            # Copy of lines so lines can be deleted or inserted in loop
+            for line_idx, line in enumerate(lines[:]):
+                if not line in ('T0', 'T1'):
+                    continue
+                if remove_hack:
+                    with exception_handler(layer_num, ignore_errors):
+                        self.remove_hack(layer_num, lines, line_idx)
+                if remove_superfluous:
+                    with exception_handler(layer_num, ignore_errors):
+                        self.remove_superfluous(layer_num, lines, line_idx)
+            data[layer_idx] = '\n'.join(lines)
         log('d', '*** MARK 2 TWEAKS END ***')
         return data
 
@@ -104,22 +126,7 @@ class Mark2Tweaks(Script):
         if result is not None:
             return self.getValue(result, ";LAYER:")
 
-    def remove_superfluous(self, layer_num, lines, ignore_errors):
-        """Remove superfluous G-code lines that the Mark 2 does not need."""
-        # Copy of lines so lines can be deleted or inserted in loop
-        for i, line in enumerate(lines[:]):
-            if line in ('T0', 'T1'):
-                try:
-                    self.strip_cura_print_area_hack(layer_num, lines, i)
-                except:
-                    handle_exception(layer_num, ignore_errors)
-                try:
-                    self.collapse_post_tool_change_movements(
-                      layer_num, lines, i)
-                except:
-                    handle_exception(layer_num, ignore_errors)
-
-    def strip_cura_print_area_hack(self, layer_num, lines, t_idx):
+    def remove_hack(self, layer_num, lines, t_idx):
         """Remove TinkerGnome's Cura print area workaround line.
 
         If there is a G0 between T and G10/M104, remove it.
@@ -137,7 +144,7 @@ class Mark2Tweaks(Script):
             layer_log(layer_num, 'd', 'Striping Cura print area hack.')
             del lines[hack_idx]
 
-    def collapse_post_tool_change_movements(self, layer_num, lines, t_idx):
+    def remove_superfluous(self, layer_num, lines, t_idx):
         """Collapse any post tool change movents into a single movement.
 
         Any non-extrusion movements after tool change should be collapsed into

@@ -25,8 +25,8 @@ Put this script in PostProcessingPlugin's scripts folder.
 """
 
 
-import sys
 import re
+import traceback
 from UM.Logger import Logger
 from ..Script import Script
 
@@ -35,17 +35,18 @@ from ..Script import Script
 log = Logger.log
 
 
+def handle_exception(layer_num, log_not_raise=False):
+    """Either raise or just log the last exception."""
+    if log_not_raise:
+        layer_log(layer_num, 'e', ''.join(traceback.format_exc()))
+    else:
+        layer_log(layer_num, 'e', 'Exception!  Traceback follows.')
+        raise
+
+
 def layer_log(layer_num, message_type, message):
     """Log a message prefixed with the curent layer number."""
-    log(message_type, layer_msg(layer_num, message))
-
-
-def layer_msg(layer_num, message):
-    """Return msg prefixed with the current layer number."""
-    return 'Layer {:.0f}: {}'.format(layer_num, message)
-
-def layer_assert(layer_num, condition, message):
-    assert condition, layer_msg(layer_num, message)
+    log(message_type, 'Layer {:.0f}: {}'.format(layer_num, message))
 
 
 class Mark2Tweaks(Script):
@@ -68,6 +69,13 @@ class Mark2Tweaks(Script):
                   "Remove superfluous movements after each tool change.  This can improve print quality by preventing materials from incorrectly touching immediately after a tool change.",
                 "type": "bool",
                 "default_value": true
+              },
+              "ignore_errors": {
+                "label": "Ignore Errors",
+                "description":
+                  "If any errors occur while performing the tweaks, skip them keep going",
+                "type": "bool",
+                "default_value": true
               }
             }
           }'''
@@ -76,14 +84,16 @@ class Mark2Tweaks(Script):
         """Process all G-code and apply selected tweaks."""
         log('d', '*** MARK 2 TWEAKS START ***')
         remove_superfluous = self.getSettingValueByKey('remove_superfluous')
+        ignore_errors = self.getSettingValueByKey('ignore_errors')
         log('d', 'Remove Superfluous: {}'.format(remove_superfluous))
+        log('d', 'Ignore Errors: {}'.format(ignore_errors))
         for i, layer in enumerate(data):
             lines = layer.split('\n')
             layer_num = self.find_layer_num(lines)
             if layer_num is None:
                 continue
             if remove_superfluous:
-                self.remove_superfluous(layer_num, lines)
+                self.remove_superfluous(layer_num, lines, ignore_errors)
             data[i] = '\n'.join(lines)
         log('d', '*** MARK 2 TWEAKS END ***')
         return data
@@ -94,24 +104,20 @@ class Mark2Tweaks(Script):
         if result is not None:
             return self.getValue(result, ";LAYER:")
 
-    def remove_superfluous(self, layer_num, lines):
+    def remove_superfluous(self, layer_num, lines, ignore_errors):
         """Remove superfluous G-code lines that the Mark 2 does not need."""
         # Copy of lines so lines can be deleted or inserted in loop
         for i, line in enumerate(lines[:]):
             if line in ('T0', 'T1'):
                 try:
                     self.strip_cura_print_area_hack(layer_num, lines, i)
-                except Exception as exception:
-                    self.log_exception_as_warning(layer_num, exception)
+                except:
+                    handle_exception(layer_num, ignore_errors)
                 try:
                     self.collapse_post_tool_change_movements(
                       layer_num, lines, i)
-                except Exception as exception:
-                    self.log_exception_as_warning(layer_num, exception)
-
-    def log_exception_as_warning(self, layer_num, exception):
-        lineno = sys.exc_info()[-1].tb_lineno
-        layer_log(layer_num, 'w', 'Line {}: {}'.format(lineno, exception))
+                except:
+                    handle_exception(layer_num, ignore_errors)
 
     def strip_cura_print_area_hack(self, layer_num, lines, t_idx):
         """Remove TinkerGnome's Cura print area workaround line.
@@ -121,7 +127,7 @@ class Mark2Tweaks(Script):
         TinkerGnome says adding it was a hack/workaround so we can kill it.
         """
         end_idx = self.find_g10_or_m104(layer_num, lines, t_idx)
-        hack = self.find_line_and_index(lines, 'G0', ('X', 'Y', 'Z'), t_idx+1,
+        hack = self.find_line_and_index(lines, 'G0', ('X', 'Y', 'Z'), t_idx,
           end_idx)
         if hack is None:
             return
@@ -140,44 +146,48 @@ class Mark2Tweaks(Script):
         """
         start_idx = self.find_g10_or_m104(layer_num, lines, t_idx)
         end_idx = self.find_line_index(lines, ('G0', 'G1'), 'E', start_idx)
-        layer_assert(layer_num, end_idx is not None,
-          'Cannot find extruding G0/G1 line after tool change.')
+        assert end_idx is not None, \
+          'Cannot find extruding G0/G1 line after tool change.'
 
         first_g = self.find_line_and_index(lines, ('G0', 'G1'), None,
           start_idx, end_idx)
-        layer_assert(layer_num, first_g is not None,
-          'Sanity Check: Could not find a G0/G1 line before extrusion and '
-          'after tool change.')
+        assert first_g is not None, \
+          'Sanity Check: Could not find a G0/G1 line before extrusion and ' \
+          'after tool change.'
         first_g_line, first_g_idx = first_g
-        layer_assert(layer_num, first_g_idx < end_idx,
-          'Sanity Check: First G0/G1 is >= to first extrusion.')
+        assert first_g_idx < end_idx, \
+          'Sanity Check: First G0/G1 is >= to first extrusion.'
 
         f_value = self.getValue(first_g_line, 'F')
         z_value = self.getValue(first_g_line, 'Z')
-        layer_assert(layer_num, z_value is not None,
-          'Sanity Check: Z value not found in first G0/G1 line.')
+        assert z_value is not None, \
+          'Sanity Check: Z value not found in first G0/G1 line.'
 
         self.delete_all_g0_or_g1_except_last(layer_num, lines, first_g_idx,
           'Collapsing post tool change movements.')
-        layer_assert(layer_num, self.is_g0_or_g1(lines[first_g_idx]),
-          'Sanity Check: Missing G0/G1 after collapse.')
-        layer_assert(layer_num, not self.is_g0_or_g1(lines[first_g_idx+1]),
-          'Sanity Check: More than one G0/G1 after collapse.')
+        assert self.is_g0_or_g1(lines[first_g_idx]), \
+          'Sanity Check: Missing G0/G1 after collapse.'
+        assert not self.is_g0_or_g1(lines[first_g_idx+1]), \
+          'Sanity Check: More than one G0/G1 after collapse.'
 
         self.add_f_and_z_values(layer_num, lines, first_g_idx, z_value,
           f_value)
-        layer_assert(layer_num,
-          self.getValue(lines[first_g_idx], 'Z') is not None,
-          'Sanity Check: Missing required Z value.')
+        assert self.getValue(lines[first_g_idx], 'Z') is not None, \
+          'Sanity Check: Missing required Z value.'
 
     def find_g10_or_m104(self, layer_num, lines, t_idx):
+        """Find the next G10 or M104 line.
+
+        G10 is for UltiGCode-style G-code.
+        M104 is for RepRap-style G-code.
+        """
         idx = self.find_line_index(lines, 'G10', start=t_idx)
         if idx is None:  # Assume RepRap style G-code
             idx = self.find_line_index(lines, 'M104', start=t_idx)
-        layer_assert(layer_num, idx is not None,
-          'Cannot find G10/M104 after tool change.')
-        layer_assert(layer_num, t_idx < idx < t_idx + 10,
-          'Sanity Check: G10/M104 too far from T')
+        assert idx is not None, \
+          'Cannot find G10/M104 after tool change.'
+        assert t_idx < idx < t_idx + 10, \
+          'Sanity Check: G10/M104 too far from T'
         return idx
 
     def delete_all_g0_or_g1_except_last(self, layer_num, lines, first_g_idx,
@@ -200,6 +210,7 @@ class Mark2Tweaks(Script):
             del lines[first_g_idx]
 
     def is_g0_or_g1(self, line):
+        """Return true is line is a G0 or G1 command."""
         return line.startswith('G0 ') or line.startswith('G1 ')
 
     def add_f_and_z_values(self, layer_num, lines, g_idx, z_value,
